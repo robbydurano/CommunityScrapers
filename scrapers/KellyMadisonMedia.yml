@@ -107,19 +107,21 @@ xPathScrapers:
                 with: $1
 
   8ksite:
+    common:
+      $url: //link[@rel="canonical"]/@href
     scene:
       Title: //strong[text()="Title:"]/following-sibling::a
       Code:
-        selector: //strong[text()="Title:"]/following-sibling::a/@href
+        selector: $url
         postProcess:
           - replace:
-              - regex: .+?(8\w+)/(\d+)
-                with: "$1 #$2"
-      URL: //strong[text()="Title:"]/following-sibling::a/@href
+              - regex: .+?((5|8)\w+)/(\d+) # 8K sites show both 8K and 5K studios' scenes
+                with: "$1 #$3"
+      URL: $url
       Date: //i[contains(@class, "fa-calendar")]/following-sibling::span
-      Image: //video/@poster
+      Image: //meta[@property="og:image"]/@content
       Details:
-        selector: (//h2)[1]/following-sibling::p
+        selector: //text()[contains(., 'Episode Summary')]/ancestor::p[1]
         postProcess:
           - replace:
               - regex: ^Episode Summary:\s+
@@ -139,13 +141,26 @@ xPathScrapers:
                 # TODO: scrape as markers if we ever get support for that
                 - regex: \s*\(.+$
                   with: ""
+                # KMM scenes often include the "Amazon position" and tag it as "Amazon",
+                # but other studios use "Amazon" to mean a larger dominant woman.
+                - regex: Amazon
+                  with: Amazon Position
+                
       Studio:
         Name:
-          selector: //meta[@property="og:site_name"]/@content
+          selector: $url
           postProcess:
-            - map:
-                8Kmilfs: 8K Milfs
-                8Kteens: 8K Teens
+            - replace:
+              - regex: '.+?((5|8)\w+)/\d+'
+                with: $1
+              - regex: '8KM'
+                with: 8K Milfs
+              - regex: '8KT'
+                with: 8K Teens
+              - regex: '5KP'
+                with: 5KPorn
+              - regex: '5KT'
+                with: 5Kteens
 
 driver:
   cookies:
