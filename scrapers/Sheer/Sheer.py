@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 SHEER_BASE = "https://www.sheer.com"
-SCRIPT_DIR  = os.path.dirname(os.path.realpath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.ini")
 
 DEFAULT_CONFIG = """[Sheer]
@@ -182,6 +182,7 @@ def parse_post(html, post_url):
         studio_url = post_url.rsplit("/post/", 1)[0]
         scrape["studio"] = {"url": studio_url}
 
+    scrape["code"] = post_id
     scrape["urls"] = [post_url]
     return scrape
 
