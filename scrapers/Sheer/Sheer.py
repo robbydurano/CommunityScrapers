@@ -1,4 +1,6 @@
+import configparser
 import json
+import os
 import re
 import sys
 from datetime import datetime, timedelta
@@ -9,13 +11,48 @@ import requests
 from bs4 import BeautifulSoup
 
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
 SHEER_BASE = "https://www.sheer.com"
+SCRIPT_DIR  = os.path.dirname(os.path.realpath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.ini")
+
+DEFAULT_CONFIG = """[Sheer]
+# Paste your cookie string here.
+# In Chrome/Firefox: F12 -> Network -> any sheer.com request -> Headers -> Cookie
+cookie =
+"""
+
+
+def get_cookies():
+    if not os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "w") as f:
+            f.write(DEFAULT_CONFIG)
+        log.info(f"Created config.ini at {CONFIG_FILE} - add your cookie string to scrape authenticated content")
+        return {}
+
+    config = configparser.RawConfigParser()
+    config.read(CONFIG_FILE)
+    cookie_str = config.get("Sheer", "cookie", fallback="").strip()
+    if not cookie_str:
+        log.warning("No cookie set in config.ini - scraping logged-out content only")
+        return {}
+
+    cookies = {}
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if "=" in part:
+            name, _, value = part.partition("=")
+            cookies[name.strip()] = value.strip()
+    return cookies
 
 
 def fetch(url):
-    log.debug(f"Fetching: {url}")
-    r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+    cookies = get_cookies()
+    r = requests.get(
+        url,
+        headers={"User-Agent": USER_AGENT},
+        cookies=cookies,
+        timeout=15,
+    )
     if r.status_code != 200:
         log.error(f"HTTP {r.status_code} for {url}")
         sys.exit(1)
@@ -23,10 +60,6 @@ def fetch(url):
 
 
 def parse_relative_date(text):
-    """
-    Convert relative dates like '20 hours ago', '3 days ago', '2 weeks ago'
-    to YYYY-MM-DD. Falls back to today if unparseable.
-    """
     text = text.strip().lower()
     now = datetime.now()
 
@@ -34,25 +67,17 @@ def parse_relative_date(text):
     if m:
         n = int(m.group(1))
         unit = m.group(2)
-        if unit == "second":
-            delta = timedelta(seconds=n)
-        elif unit == "minute":
-            delta = timedelta(minutes=n)
-        elif unit == "hour":
-            delta = timedelta(hours=n)
-        elif unit == "day":
-            delta = timedelta(days=n)
-        elif unit == "week":
-            delta = timedelta(weeks=n)
-        elif unit == "month":
-            delta = timedelta(days=n * 30)
-        elif unit == "year":
-            delta = timedelta(days=n * 365)
-        else:
-            delta = timedelta(0)
-        return (now - delta).strftime("%Y-%m-%d")
+        deltas = {
+            "second": timedelta(seconds=n),
+            "minute": timedelta(minutes=n),
+            "hour":   timedelta(hours=n),
+            "day":    timedelta(days=n),
+            "week":   timedelta(weeks=n),
+            "month":  timedelta(days=n * 30),
+            "year":   timedelta(days=n * 365),
+        }
+        return (now - deltas.get(unit, timedelta(0))).strftime("%Y-%m-%d")
 
-    # Try absolute formats
     for fmt in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d", "%b. %d, %Y",
                 "%d %b %Y", "%d %B %Y"):
         try:
@@ -60,7 +85,6 @@ def parse_relative_date(text):
         except ValueError:
             pass
 
-    # Try partial date like "March 31" or "31 March" — assume current year
     for fmt in ("%b %d", "%B %d", "%d %b", "%d %B"):
         try:
             d = datetime.strptime(text, fmt)
@@ -76,88 +100,89 @@ def parse_post(html, post_url):
     soup = BeautifulSoup(html, "html.parser")
     scrape = {}
 
+    # Scope to the specific post article
+    post_id = post_url.rstrip("/").split("/")[-1]
+    article = soup.find("article", {"data-post-id": post_id}) or soup.find("article")
+
+    ctx = article if article else soup
+
     # Title
-    el = soup.select_one("h3.post__title")
+    el = ctx.select_one("h3.post__title")
     if el:
         scrape["title"] = el.get_text(strip=True)
     else:
-        og = soup.find("meta", property="og:title") or soup.find("meta", {"name": "og:title"})
+        og = soup.find("meta", property="og:title")
         if og:
             scrape["title"] = og.get("content", "").strip()
 
-    # Date — try <time datetime="..."> first, then relative text
+    # Date
     time_el = soup.find("time")
     if time_el and time_el.get("datetime"):
         scrape["date"] = time_el["datetime"][:10]
     else:
-        date_el = soup.select_one(".post__date-text")
+        date_el = ctx.select_one(".post__date-text")
         if date_el:
             parsed = parse_relative_date(date_el.get_text(strip=True))
             if parsed:
                 scrape["date"] = parsed
 
     # Details
-    el = soup.select_one(".post__text")
+    el = ctx.select_one(".post__text")
     if el:
         scrape["details"] = el.get_text(strip=True)
     else:
-        og = soup.find("meta", property="og:description") or soup.find("meta", {"name": "og:description"})
+        og = soup.find("meta", property="og:description")
         if og:
             scrape["details"] = og.get("content", "").strip()
 
-    # Image — use og:image (poster) not the blurred SFW preview
-    og_img = soup.find("meta", property="og:image") or soup.find("meta", {"name": "twitter:image"})
-    if og_img:
-        scrape["image"] = og_img.get("content", "")
+    # Image — data-poster on video tag (server-rendered)
+    video_el = ctx.select_one("video[data-poster]")
+    if video_el and video_el.get("data-poster"):
+        scrape["image"] = video_el["data-poster"]
+    else:
+        img_el = ctx.select_one("img.video-poster__img")
+        if img_el and img_el.get("src"):
+            scrape["image"] = img_el["src"]
+        else:
+            og_img = soup.find("meta", property="og:image")
+            if og_img:
+                scrape["image"] = og_img.get("content", "")
+
+    # Tags — inside <template id="post-tags__template">
+    tags = []
+    template = ctx.find("template", id="post-tags__template")
+    if template:
+        inner = template.decode_contents()
+        tmpl_soup = BeautifulSoup(inner, "html.parser")
+        for a in tmpl_soup.select(".post-tags__link"):
+            name = a.get_text(strip=True)
+            if name:
+                tags.append({"name": name})
+    if tags:
+        scrape["tags"] = tags
 
     # Performers
     performers = []
-    for a in soup.select(".post__featuring-models__list-item"):
+    for a in ctx.select(".post__featuring-models__list-item"):
         name = a.get_text(strip=True)
         if name:
             performers.append({"name": name})
     if performers:
         scrape["performers"] = performers
 
-    # Tags — in <template> tag, need to parse its innerHTML
-    tags = []
-    template = soup.find("template", id="post-tags__template")
-    if template:
-        # BeautifulSoup parses <template> content as a string in .string or via children
-        tmpl_html = str(template)
-        tmpl_soup = BeautifulSoup(tmpl_html, "html.parser")
-        for a in tmpl_soup.select(".post-tags__link"):
-            name = a.get_text(strip=True)
-            if name:
-                tags.append({"name": name})
-    # Also try rendered tags (visible on page if JS has run)
-    for a in soup.select(".post-tags .post-tags__link"):
-        name = a.get_text(strip=True)
-        if name and {"name": name} not in tags:
-            tags.append({"name": name})
-    if tags:
-        scrape["tags"] = tags
-
     # Studio
-    studio_name_el = soup.select_one(".profile-header__title")
-    studio_link_el = soup.select_one(".post__profile-name--link")
+    studio_link_el = ctx.select_one(".post__profile-name--link")
     if studio_link_el:
         studio_name = studio_link_el.get_text(strip=True)
         studio_url  = studio_link_el.get("href", "")
         if studio_url and not studio_url.startswith("http"):
             studio_url = SHEER_BASE + studio_url
-    elif studio_name_el:
-        studio_name = studio_name_el.get_text(strip=True)
-        studio_url  = post_url.rsplit("/post/", 1)[0]
-    else:
-        studio_name = None
-        studio_url  = post_url.rsplit("/post/", 1)[0]
-
-    if studio_name:
         scrape["studio"] = {"name": studio_name, "url": studio_url}
+    else:
+        studio_url = post_url.rsplit("/post/", 1)[0]
+        scrape["studio"] = {"url": studio_url}
 
     scrape["urls"] = [post_url]
-
     return scrape
 
 
@@ -168,7 +193,6 @@ def by_url(url):
 
 if __name__ == "__main__":
     fragment = json.loads(sys.stdin.read())
-    log.debug(f"Input: {fragment}")
 
     url = fragment.get("url", "")
     if not url:
@@ -176,5 +200,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     result = by_url(url)
-    log.debug(f"Result: {result}")
     print(json.dumps(result))
