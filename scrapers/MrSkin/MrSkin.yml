@@ -1,0 +1,51 @@
+name: MrSkin / MrMan
+sceneByURL:
+  - action: script
+    url:
+      - mrskin.com/clipplayer/
+    script:
+      - python3
+      - MrSkin.py
+      - sceneByURL
+      - mrskin
+    scraper: MrSkin
+  - action: script
+    url:
+      - mrman.com/clipplayer/
+    script:
+      - python3
+      - MrSkin.py
+      - sceneByURL
+      - mrman
+    scraper: MrMan
+
+performerByURL:
+  - action: script
+    url:
+      - mrskin.com
+    script:
+      - python3
+      - MrSkin.py
+      - performerByURL
+      - mrskin
+    scraper: MrSkin
+  - action: script
+    url:
+      - mrman.com
+    script:
+      - python3
+      - MrSkin.py
+      - performerByURL
+      - mrman
+    scraper: MrMan
+
+performerByName:
+  action: script
+  script:
+    - python3
+    - MrSkin.py
+    - performerByName
+    - mrskin
+  scraper: MrSkin
+
+# Last Updated May 12, 2026
