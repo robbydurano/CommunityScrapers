@@ -48,6 +48,15 @@ mrman_remember =
 mrman_csrf =
 mrman_cf_clearance =
 mrman_acct_state =
+
+[Stash]
+# Stash GraphQL URL — enables setting scene rating after scraping (optional)
+# Leave blank to disable
+stash_url =
+# Stash API key (leave blank if authentication is not enabled)
+stash_api_key =
+# Custom field prefix matching your performer-rating plugin config (default: blank)
+cf_prefix =
 """
 
 
@@ -58,6 +67,125 @@ def load_config():
     cfg = configparser.RawConfigParser()
     cfg.read(CONFIG_FILE)
     return cfg
+
+
+def stash_config():
+    cfg = load_config()
+    return {
+        "url":      cfg.get("Stash", "stash_url",     fallback="").strip(),
+        "api_key":  cfg.get("Stash", "stash_api_key", fallback="").strip(),
+        "cf_prefix": cfg.get("Stash", "cf_prefix",    fallback="").strip(),
+    }
+
+
+MRSKIN_TO_CRITERION = {1: 1, 2: 3, 3: 4, 4: 5}
+
+
+def _stash_gql(stash_url, api_key, query, variables=None):
+    hdrs = {"Content-Type": "application/json"}
+    if api_key:
+        hdrs["ApiKey"] = api_key
+    r = requests.post(
+        stash_url,
+        json={"query": query, "variables": variables or {}},
+        headers=hdrs,
+        timeout=15,
+    )
+    r.raise_for_status()
+    resp = r.json()
+    if "errors" in resp:
+        raise RuntimeError(f"GraphQL: {resp['errors']}")
+    return resp.get("data", {})
+
+
+def stash_find_scene_by_url(stash_url, api_key, clip_url):
+    q = """
+query($url: String!) {
+  findScenes(filter: {per_page: 1}, scene_filter: {url: {value: $url, modifier: EQUALS}}) {
+    scenes { id }
+  }
+}"""
+    data = _stash_gql(stash_url, api_key, q, {"url": clip_url})
+    scenes = data.get("findScenes", {}).get("scenes", [])
+    return scenes[0]["id"] if scenes else None
+
+
+def stash_set_scene_rating(stash_url, api_key, scene_id, rating100):
+    q = """
+mutation($input: SceneUpdateInput!) {
+  sceneUpdate(input: $input) { id }
+}"""
+    _stash_gql(stash_url, api_key, q, {"input": {"id": scene_id, "rating100": rating100}})
+
+
+def stash_find_performer_by_url(stash_url, api_key, url):
+    q = """
+query($url: String!) {
+  findPerformers(
+    filter: {per_page: 1}
+    performer_filter: {url: {value: $url, modifier: EQUALS}}
+  ) {
+    performers { id custom_fields }
+  }
+}"""
+    data = _stash_gql(stash_url, api_key, q, {"url": url})
+    ps = data.get("findPerformers", {}).get("performers", [])
+    return ps[0] if ps else None
+
+
+def stash_update_sluttiness(stash_url, api_key, performer_id, current_cf, criterion_score, cf_prefix):
+    field_name = cf_prefix + "Sluttiness"
+    existing = current_cf.get(field_name)
+    if existing is not None:
+        try:
+            if int(existing) >= criterion_score:
+                return False
+        except (ValueError, TypeError):
+            pass
+    new_cf = {**current_cf, field_name: str(criterion_score)}
+    q = """
+mutation($input: PerformerUpdateInput!) {
+  performerUpdate(input: $input) { id }
+}"""
+    _stash_gql(stash_url, api_key, q, {"input": {"id": performer_id, "custom_fields": new_cf}})
+    return True
+
+
+def apply_stash_updates(clip_url, rating_stars, performers):
+    """Set scene rating and performer Sluttiness in Stash via GraphQL."""
+    sc = stash_config()
+    if not sc["url"]:
+        return
+    stash_url = sc["url"]
+    api_key   = sc["api_key"]
+    cf_prefix = sc["cf_prefix"]
+
+    scene_id = stash_find_scene_by_url(stash_url, api_key, clip_url)
+    if scene_id and rating_stars:
+        try:
+            stash_set_scene_rating(stash_url, api_key, scene_id, rating_stars * 25)
+            print(f"[MrSkin] set scene rating100={rating_stars * 25}", file=sys.stderr)
+        except Exception as exc:
+            print(f"[MrSkin] scene rating update failed: {exc}", file=sys.stderr)
+
+    criterion_score = MRSKIN_TO_CRITERION.get(rating_stars)
+    if criterion_score:
+        for p in performers:
+            p_url = p.get("url")
+            if not p_url:
+                continue
+            try:
+                sp = stash_find_performer_by_url(stash_url, api_key, p_url)
+                if not sp:
+                    continue
+                current_cf = sp.get("custom_fields") or {}
+                updated = stash_update_sluttiness(
+                    stash_url, api_key, sp["id"], current_cf, criterion_score, cf_prefix
+                )
+                if updated:
+                    print(f"[MrSkin] set Sluttiness={criterion_score} for {p.get('name', sp['id'])}", file=sys.stderr)
+            except Exception as exc:
+                print(f"[MrSkin] performer update failed for {p_url}: {exc}", file=sys.stderr)
 
 
 def session_cookies(site):
@@ -599,8 +727,6 @@ def scrape_scene(url, site="mrskin"):
     result = {"title": title, "url": url}
     if desc_text:
         result["details"] = desc_text
-    if rating_stars:
-        result["rating100"] = rating_stars * 25  # MrSkin 4-star → Stash rating100
     if performers:
         result["performers"] = performers
     if show_name:
@@ -613,6 +739,12 @@ def scrape_scene(url, site="mrskin"):
         result["groups"] = [group_entry]
     if tags:
         result["tags"] = tags
+
+    # Push scene rating and performer Sluttiness to Stash if configured
+    try:
+        apply_stash_updates(url, rating_stars, performers)
+    except Exception as exc:
+        print(f"[MrSkin] Stash update error: {exc}", file=sys.stderr)
 
     return result
 
