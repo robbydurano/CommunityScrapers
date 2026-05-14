@@ -506,6 +506,7 @@ def scrape_scene(url, site="mrskin"):
     # Step 2: call the authenticated JSON API used by the Backbone media player.
     # URL: /clipplayer/{md5_token}/{scene_id}  (media.js module 62)
     clip_json = {}
+    rating_stars = None
     api_hash = _clip_api_token(page_soup, scene_id)
     if api_hash:
         api_url = f"{base_site}/clipplayer/{api_hash}/{scene_id}"
@@ -529,7 +530,7 @@ def scrape_scene(url, site="mrskin"):
 
     # Step 3: parse everything from the JSON API response.
     nude_pat = re.compile(r"-(?:nude|sexy|naked|hot)-c\d+")
-    performer_url = None
+    performers = []
     show_name = show_name_hint
     show_url = None
     ep_label = None
@@ -537,14 +538,14 @@ def scrape_scene(url, site="mrskin"):
     tags = []
 
     if clip_json:
-        # title HTML: <a href="/levy-tran-nude-c25827">Levy Tran</a> in
+        # title HTML: <a href="/levy-tran-nude-c25827">Levy Tran</a>,
+        #             <a href="/lynsey-taylor-mackay-nude-c23658">Lynsey Taylor Mackay</a> in
         #             <a class="title" href="/shameless-nude-scenes-t47576">Shameless</a>
         title_soup = BeautifulSoup(clip_json.get("title", ""), "html.parser")
         for a in title_soup.find_all("a", href=nude_pat):
             href = a.get("href", "")
-            performer_url = href if href.startswith("http") else base_site + href
-            performer_name = performer_name or a.get_text(strip=True)
-            break
+            p_url = href if href.startswith("http") else base_site + href
+            performers.append({"name": a.get_text(strip=True), "url": p_url})
         for a in title_soup.find_all("a", class_="title"):
             show_name = a.get_text(strip=True)
             href = a.get("href", "")
@@ -559,45 +560,49 @@ def scrape_scene(url, site="mrskin"):
             muted.decompose()
         desc_text = desc_soup.get_text(" ", strip=True).strip()
 
-        # tags from clean JSON array
+        # tags and rating from clean JSON array
         inner = clip_json.get("json", {})
         for tag_name in inner.get("tags", []):
             if tag_name:
                 tags.append({"name": tag_name})
+        rating_stars = inner.get("rating")  # 1-4 scale, None if unrated
 
-        # actress_id fallback via celebrity_redirect_path if title link was missing
-        if not performer_url:
+        # actress_id fallback via celebrity_redirect_path if title links were missing
+        if not performers:
             actress_ids = inner.get("actress_id", [])
-            if actress_ids:
+            for aid in actress_ids:
                 try:
                     redir = requests.get(
-                        f"{base_site}/celebrity/{actress_ids[0]}",
+                        f"{base_site}/celebrity/{aid}",
                         headers=HEADERS, allow_redirects=False, timeout=10,
                     )
                     if redir.status_code in (301, 302, 307, 308):
                         loc = redir.headers.get("Location", "")
                         if nude_pat.search(loc):
-                            performer_url = loc if loc.startswith("http") else base_site + loc
-                            print(f"[MrSkin] performer_url via celebrity_redirect", file=sys.stderr)
+                            p_url = loc if loc.startswith("http") else base_site + loc
+                            performers.append({"url": p_url})
+                            print(f"[MrSkin] performer via celebrity_redirect: {p_url}", file=sys.stderr)
                 except Exception:
                     pass
 
-    if performer_url:
-        print(f"[MrSkin] performer_url={performer_url}", file=sys.stderr)
+    if performers:
+        print(f"[MrSkin] performers={[p.get('url', p.get('name')) for p in performers]}", file=sys.stderr)
     else:
-        print(f"[MrSkin] performer_url not found — partial result", file=sys.stderr)
+        print(f"[MrSkin] no performers found — partial result", file=sys.stderr)
 
-    parts = [p for p in [show_name, ep_label, performer_name] if p]
+    # Use first performer name for title, all names for display
+    first_name = performers[0].get("name") if performers else performer_name
+    all_names  = ", ".join(p["name"] for p in performers if p.get("name")) or performer_name
+    parts = [p for p in [show_name, ep_label, all_names] if p]
     title = " - ".join(parts) if parts else (raw_title or f"Scene {scene_id}")
 
     result = {"title": title, "url": url}
     if desc_text:
         result["details"] = desc_text
-    perf_entry = {"name": performer_name} if performer_name else {}
-    if performer_url:
-        perf_entry["url"] = performer_url
-    if perf_entry:
-        result["performers"] = [perf_entry]
+    if rating_stars:
+        result["rating"] = rating_stars * 25  # MrSkin 4-star → Stash rating100
+    if performers:
+        result["performers"] = performers
     if show_name:
         group_entry = {"name": show_name}
         if show_url:
@@ -608,6 +613,44 @@ def scrape_scene(url, site="mrskin"):
         result["groups"] = [group_entry]
     if tags:
         result["tags"] = tags
+
+    return result
+
+
+def scrape_group(url, site="mrskin"):
+    base_site = MRMAN_BASE if site == "mrman" else MRSKIN_BASE
+    cookies, extra_headers = session_cookies(site)
+    req_headers = {**HEADERS, **extra_headers}
+
+    try:
+        r = requests.get(url, headers=req_headers, cookies=cookies, timeout=15)
+        r.raise_for_status()
+    except Exception as exc:
+        print(f"[MrSkin] scrape_group error: {exc}", file=sys.stderr)
+        return {}
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    result = {"urls": [url]}
+
+    # Name: og:title or <h1>, strip trailing "Nude Scenes" suffix
+    og_title = soup.find("meta", property="og:title")
+    name = og_title.get("content", "") if og_title else ""
+    if not name:
+        h1 = soup.find("h1")
+        name = h1.get_text(strip=True) if h1 else ""
+    name = re.sub(r"\s+Nude\s+Scenes?$", "", name, flags=re.IGNORECASE).strip()
+    if name:
+        result["name"] = name
+
+    # Synopsis: og:description
+    og_desc = soup.find("meta", property="og:description")
+    if og_desc:
+        result["synopsis"] = og_desc.get("content", "")
+
+    # Cover image: og:image (CDN params stripped)
+    og_img = soup.find("meta", property="og:image")
+    if og_img:
+        result["front_image"] = strip_cdn_params(og_img.get("content", ""))
 
     return result
 
@@ -634,6 +677,11 @@ if __name__ == "__main__":
     elif action == "sceneByURL":
         url = input_data.get("url", "")
         result = scrape_scene(url, site)
+        print(json.dumps(result))
+
+    elif action == "groupByURL":
+        url = input_data.get("url", "")
+        result = scrape_group(url, site)
         print(json.dumps(result))
 
     else:

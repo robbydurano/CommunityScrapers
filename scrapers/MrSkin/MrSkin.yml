@@ -39,6 +39,26 @@ performerByURL:
       - mrman
     scraper: MrMan
 
+groupByURL:
+  - action: script
+    url:
+      - mrskin.com
+    script:
+      - python3
+      - MrSkin.py
+      - groupByURL
+      - mrskin
+    scraper: MrSkin
+  - action: script
+    url:
+      - mrman.com
+    script:
+      - python3
+      - MrSkin.py
+      - groupByURL
+      - mrman
+    scraper: MrMan
+
 performerByName:
   action: script
   script:
@@ -48,4 +68,4 @@ performerByName:
     - mrskin
   scraper: MrSkin
 
-# Last Updated May 12, 2026
+# Last Updated May 13, 2026
