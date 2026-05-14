@@ -52,7 +52,7 @@ mrman_acct_state =
 [Stash]
 # Stash GraphQL URL — enables setting scene rating after scraping (optional)
 # Leave blank to disable
-stash_url =
+stash_url = http://localhost:9999/graphql
 # Stash API key (leave blank if authentication is not enabled)
 stash_api_key =
 # Custom field prefix matching your performer-rating plugin config (default: blank)
@@ -759,9 +759,6 @@ def scrape_scene(url, site="mrskin"):
         group_entry = {"name": show_name}
         if show_url:
             group_entry["url"] = show_url
-            slug_m = re.search(r"/([^/?#]+)$", show_url)
-            if slug_m:
-                group_entry["code"] = slug_m.group(1)
         result["groups"] = [group_entry]
     if tags:
         result["tags"] = tags
