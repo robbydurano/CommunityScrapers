@@ -136,7 +136,7 @@ mutation($input: SceneUpdateInput!) {
     _stash_gql(stash_url, api_key, q, {"input": {"id": scene_id, "rating100": rating100}})
 
 
-def stash_find_performer_by_url(stash_url, api_key, url):
+def stash_find_performer(stash_url, api_key, url, name=None):
     q = """
 query($url: String!) {
   findPerformers(
@@ -148,7 +148,19 @@ query($url: String!) {
 }"""
     data = _stash_gql(stash_url, api_key, q, {"url": url})
     ps = data.get("findPerformers", {}).get("performers", [])
-    return ps[0] if ps else None
+    if ps:
+        return ps[0]
+    if name:
+        q2 = """
+query($name: String!) {
+  findPerformers(filter: {per_page: 1, q: $name}) {
+    performers { id custom_fields }
+  }
+}"""
+        data2 = _stash_gql(stash_url, api_key, q2, {"name": name})
+        ps2 = data2.get("findPerformers", {}).get("performers", [])
+        return ps2[0] if ps2 else None
+    return None
 
 
 def stash_update_sluttiness(stash_url, api_key, performer_id, current_cf, criterion_score, cf_prefix):
@@ -160,12 +172,11 @@ def stash_update_sluttiness(stash_url, api_key, performer_id, current_cf, criter
                 return False
         except (ValueError, TypeError):
             pass
-    new_cf = {**current_cf, field_name: str(criterion_score)}
     q = """
 mutation($input: PerformerUpdateInput!) {
   performerUpdate(input: $input) { id }
 }"""
-    _stash_gql(stash_url, api_key, q, {"input": {"id": performer_id, "custom_fields": new_cf}})
+    _stash_gql(stash_url, api_key, q, {"input": {"id": performer_id, "custom_fields": {"set": {field_name: str(criterion_score)}}}})
     return True
 
 
@@ -198,9 +209,9 @@ def apply_stash_updates(clip_url, rating_stars, performers):
             if not p_url:
                 continue
             try:
-                sp = stash_find_performer_by_url(stash_url, api_key, p_url)
+                sp = stash_find_performer(stash_url, api_key, p_url, name=p.get("name"))
                 if not sp:
-                    print(f"[MrSkin] performer not found in Stash: {p_url}", file=sys.stderr)
+                    print(f"[MrSkin] performer not found in Stash: {p.get('name')} / {p_url}", file=sys.stderr)
                     continue
                 current_cf = sp.get("custom_fields") or {}
                 updated = stash_update_sluttiness(
