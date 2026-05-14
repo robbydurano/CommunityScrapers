@@ -176,7 +176,7 @@ def stash_update_sluttiness(stash_url, api_key, performer_id, current_cf, criter
 mutation($input: PerformerUpdateInput!) {
   performerUpdate(input: $input) { id }
 }"""
-    _stash_gql(stash_url, api_key, q, {"input": {"id": performer_id, "custom_fields": {"set": {field_name: str(criterion_score)}}}})
+    _stash_gql(stash_url, api_key, q, {"input": {"id": performer_id, "custom_fields": {"partial": {field_name: criterion_score}}}})
     return True
 
 
