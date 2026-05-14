@@ -64,8 +64,26 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "w") as f:
             f.write(DEFAULT_CONFIG)
+        cfg = configparser.RawConfigParser()
+        cfg.read(CONFIG_FILE)
+        return cfg
     cfg = configparser.RawConfigParser()
     cfg.read(CONFIG_FILE)
+    # Append any sections present in DEFAULT_CONFIG but missing from the file
+    default_cfg = configparser.RawConfigParser()
+    default_cfg.read_string(DEFAULT_CONFIG)
+    with open(CONFIG_FILE, "r") as f:
+        existing_text = f.read()
+    additions = []
+    for section in default_cfg.sections():
+        if f"[{section}]" not in existing_text:
+            additions.append(f"\n[{section}]")
+            for key, val in default_cfg.items(section):
+                additions.append(f"{key} = {val}")
+    if additions:
+        with open(CONFIG_FILE, "a") as f:
+            f.write("\n" + "\n".join(additions) + "\n")
+        cfg.read(CONFIG_FILE)
     return cfg
 
 
@@ -155,16 +173,21 @@ def apply_stash_updates(clip_url, rating_stars, performers):
     """Set scene rating and performer Sluttiness in Stash via GraphQL."""
     sc = stash_config()
     if not sc["url"]:
+        print("[MrSkin] Stash URL not configured — skipping rating/Sluttiness update", file=sys.stderr)
         return
     stash_url = sc["url"]
     api_key   = sc["api_key"]
     cf_prefix = sc["cf_prefix"]
+    print(f"[MrSkin] Stash GraphQL: {stash_url}", file=sys.stderr)
 
     scene_id = stash_find_scene_by_url(stash_url, api_key, clip_url)
-    if scene_id and rating_stars:
+    if not scene_id:
+        print(f"[MrSkin] scene not found in Stash for URL {clip_url} — rating not set "
+              "(scene must already exist with this URL stored)", file=sys.stderr)
+    elif rating_stars:
         try:
             stash_set_scene_rating(stash_url, api_key, scene_id, rating_stars * 25)
-            print(f"[MrSkin] set scene rating100={rating_stars * 25}", file=sys.stderr)
+            print(f"[MrSkin] set scene {scene_id} rating100={rating_stars * 25}", file=sys.stderr)
         except Exception as exc:
             print(f"[MrSkin] scene rating update failed: {exc}", file=sys.stderr)
 
@@ -177,6 +200,7 @@ def apply_stash_updates(clip_url, rating_stars, performers):
             try:
                 sp = stash_find_performer_by_url(stash_url, api_key, p_url)
                 if not sp:
+                    print(f"[MrSkin] performer not found in Stash: {p_url}", file=sys.stderr)
                     continue
                 current_cf = sp.get("custom_fields") or {}
                 updated = stash_update_sluttiness(
@@ -184,6 +208,8 @@ def apply_stash_updates(clip_url, rating_stars, performers):
                 )
                 if updated:
                     print(f"[MrSkin] set Sluttiness={criterion_score} for {p.get('name', sp['id'])}", file=sys.stderr)
+                else:
+                    print(f"[MrSkin] Sluttiness already >= {criterion_score} for {p.get('name', sp['id'])}", file=sys.stderr)
             except Exception as exc:
                 print(f"[MrSkin] performer update failed for {p_url}: {exc}", file=sys.stderr)
 
