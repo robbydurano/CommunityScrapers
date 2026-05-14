@@ -600,7 +600,7 @@ def scrape_scene(url, site="mrskin"):
     if desc_text:
         result["details"] = desc_text
     if rating_stars:
-        result["rating"] = rating_stars * 25  # MrSkin 4-star → Stash rating100
+        result["rating100"] = rating_stars * 25  # MrSkin 4-star → Stash rating100
     if performers:
         result["performers"] = performers
     if show_name:
